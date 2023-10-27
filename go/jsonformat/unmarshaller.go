@@ -29,12 +29,12 @@ import (
 	"github.com/google/fhir/go/jsonformat/fhirvalidate"
 	"github.com/google/fhir/go/jsonformat/internal/accessor"
 	"github.com/google/fhir/go/jsonformat/internal/jsonpbhelper"
-	"github.com/json-iterator/go"
+	jsoniter "github.com/json-iterator/go"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	anypb "google.golang.org/protobuf/types/known/anypb"
 	apb "github.com/google/fhir/go/proto/google/fhir/proto/annotations_go_proto"
+	anypb "google.golang.org/protobuf/types/known/anypb"
 )
 
 var (
@@ -54,24 +54,27 @@ type Unmarshaller struct {
 	// return an error when a resource has a field exceeding this limit. If the value is negative
 	// or 0, then the maximum nesting depth is unbounded.
 	MaxNestingDepth int
-	// Stores whether extended validation checks like required fields and
-	// reference checking should be run.
-	enableExtendedValidation bool
-	cfg                      config
-	ver                      fhirversion.Version
+	validator       Validator
+	cfg             config
+	ver             fhirversion.Version
 }
 
 // NewUnmarshaller returns an Unmarshaller that performs resource validation.
 func NewUnmarshaller(tz string, ver fhirversion.Version) (*Unmarshaller, error) {
-	return newUnmarshaller(tz, ver, true /*enableExtendedValidation*/)
+	return newUnmarshaller(tz, ver, fhirvalidate.ValidateWithErrorReporter)
 }
 
 // NewUnmarshallerWithoutValidation returns an Unmarshaller that doesn't perform resource validation.
 func NewUnmarshallerWithoutValidation(tz string, ver fhirversion.Version) (*Unmarshaller, error) {
-	return newUnmarshaller(tz, ver, false /*enableExtendedValidation*/)
+	return newUnmarshaller(tz, ver, fhirvalidate.ValidatePrimitivesWithErrorReporter)
 }
 
-func newUnmarshaller(tz string, ver fhirversion.Version, enableExtendedValidation bool) (*Unmarshaller, error) {
+// NewUnmarshallerWithValidator returns an Unmarshaller that uses a custom Validator.
+func NewUnmarshallerWithValidator(tz string, ver fhirversion.Version, validator Validator) (*Unmarshaller, error) {
+	return newUnmarshaller(tz, ver, validator)
+}
+
+func newUnmarshaller(tz string, ver fhirversion.Version, validator Validator) (*Unmarshaller, error) {
 	cfg, err := getConfig(ver)
 	if err != nil {
 		return nil, err
@@ -82,12 +85,15 @@ func newUnmarshaller(tz string, ver fhirversion.Version, enableExtendedValidatio
 	}
 
 	return &Unmarshaller{
-		TimeZone:                 l,
-		cfg:                      cfg,
-		enableExtendedValidation: enableExtendedValidation,
-		ver:                      ver,
+		TimeZone:  l,
+		cfg:       cfg,
+		validator: validator,
+		ver:       ver,
 	}, nil
 }
+
+// A Validator validates a message against the FHIR specification.
+type Validator func(proto.Message, errorreporter.ErrorReporter) error
 
 // Unmarshal a FHIR resource from JSON into a ContainedResource proto. The FHIR
 // version of the proto is determined by the version the Unmarshaller was
@@ -170,12 +176,10 @@ func (u *Unmarshaller) unmarshalJSONObject(decoded map[string]json.RawMessage, e
 	if err != nil {
 		return res, err
 	}
-	if u.enableExtendedValidation {
-		if err := fhirvalidate.ValidateWithErrorReporter(res, er); err != nil {
+	if u.validator != nil {
+		if err := u.validator(res, er); err != nil {
 			return res, err
 		}
-	} else if err := fhirvalidate.ValidatePrimitivesWithErrorReporter(res, er); err != nil {
-		return res, err
 	}
 	return res, nil
 }
